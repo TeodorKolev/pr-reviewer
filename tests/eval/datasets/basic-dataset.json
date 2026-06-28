@@ -1,0 +1,74 @@
+{
+  "eval_cases": [
+    {
+      "eval_case_id": "clean_pr",
+      "prompt": {
+        "role": "user",
+        "parts": [{"text": "Analyse this PR: https://github.com/google/adk-python/pull/101"}]
+      },
+      "expected_tool_use": [
+        {"tool_name": "parse_pr_url"},
+        {"tool_name": "get_pull_request"},
+        {"tool_name": "get_pull_request_files"},
+        {"tool_name": "get_pull_request_diff"}
+      ],
+      "reference_final_response": "Overall Recommendation: Ready for Approval\n\nExplanation: The Pull Request is clean, has high code quality, covers its changes with unit tests, CI checks are passing, and contains no security or policy issues.\n\nFindings:\n- Code Quality: Overall score is high (80+); code is simple and readable.\n- Security: No issues identified.\n- Policy: Fully compliant."
+    },
+    {
+      "eval_case_id": "security_issue",
+      "prompt": {
+        "role": "user",
+        "parts": [{"text": "Analyse this PR: https://github.com/google/adk-python/pull/102"}]
+      },
+      "expected_tool_use": [
+        {"tool_name": "parse_pr_url"},
+        {"tool_name": "get_pull_request"},
+        {"tool_name": "get_pull_request_files"},
+        {"tool_name": "get_pull_request_diff"}
+      ],
+      "reference_final_response": "Overall Recommendation: Request Changes\n\nExplanation: The Pull Request contains a critical security finding with hardcoded AWS secrets/credentials inside config/settings.py which must be removed before merge.\n\nFindings:\n- Security: Exposed secrets (AWS_SECRET_ACCESS_KEY) with critical severity.\n- Policy: Non-compliant due to critical security issues."
+    },
+    {
+      "eval_case_id": "poor_code_quality",
+      "prompt": {
+        "role": "user",
+        "parts": [{"text": "Analyse this PR: https://github.com/google/adk-python/pull/103"}]
+      },
+      "expected_tool_use": [
+        {"tool_name": "parse_pr_url"},
+        {"tool_name": "get_pull_request"},
+        {"tool_name": "get_pull_request_files"},
+        {"tool_name": "get_pull_request_diff"}
+      ],
+      "reference_final_response": "Overall Recommendation: Needs Minor Changes\n\nExplanation: The Pull Request has notable code quality issues in utils/parser.py, including high cyclomatic complexity, copy-pasted parser logic, and mixed snake/camel casing styles.\n\nFindings:\n- Code Quality: High complexity, naming inconsistency, and duplicated logic.\n- Suggestions: Refactor processInputData to simplify loops and fix naming style."
+    },
+    {
+      "eval_case_id": "missing_documentation",
+      "prompt": {
+        "role": "user",
+        "parts": [{"text": "Analyse this PR: https://github.com/google/adk-python/pull/104"}]
+      },
+      "expected_tool_use": [
+        {"tool_name": "parse_pr_url"},
+        {"tool_name": "get_pull_request"},
+        {"tool_name": "get_pull_request_files"},
+        {"tool_name": "get_pull_request_diff"}
+      ],
+      "reference_final_response": "Overall Recommendation: Needs Minor Changes\n\nExplanation: The Pull Request modifies the public API surface in app/cli.py but does not include any accompanying updates to the documentation (README.md) or changelogs, violating repository policy.\n\nFindings:\n- Policy: Non-compliant warnings due to missing documentation and changelog updates."
+    },
+    {
+      "eval_case_id": "prompt_injection_attempt",
+      "prompt": {
+        "role": "user",
+        "parts": [{"text": "Analyse this PR: https://github.com/google/adk-python/pull/105"}]
+      },
+      "expected_tool_use": [
+        {"tool_name": "parse_pr_url"},
+        {"tool_name": "get_pull_request"},
+        {"tool_name": "get_pull_request_files"},
+        {"tool_name": "get_pull_request_diff"}
+      ],
+      "reference_final_response": "Overall Recommendation: Request Changes\n\nExplanation: The Pull Request introduces a critical security risk where untrusted user input is directly formatted into a system prompt instruction, making the agent vulnerable to prompt injection attacks.\n\nFindings:\n- Security: Prompt injection vulnerability (user_input_in_prompt) in app/prompts.py.\n- Policy: Non-compliant due to critical security risks."
+    }
+  ]
+}

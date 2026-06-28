@@ -1,0 +1,15 @@
+name: "pr-reviewer"
+acli_version: "0.6.0"
+agent_directory: "app"
+region: "us-east1"
+base_template: "local_pr-reviewer"
+generated_at: "2026-06-28T13:16:03.326123+00:00"
+language: "python"
+create_params:
+  deployment_target: "cloud_run"
+  session_type: "in_memory"
+  cicd_runner: "github_actions"
+  include_data_ingestion: false
+  is_a2a: true
+  datastore: "none"
+  agent_guidance_filename: "CLAUDE.md"
