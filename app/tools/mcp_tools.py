@@ -755,14 +755,19 @@ def security_toolset() -> McpToolset:
 
 
 def policy_toolset() -> McpToolset:
-    """Tools for the Policy Agent (labels, issues, config files)."""
+    """Tools for the Policy Agent (labels, issues, config files).
+
+    Deliberately excludes get_pull_request_comments (review discussion is handled
+    by tests_review_agent via get_pull_request_reviews, and comments are not
+    needed for policy compliance) and search_code (agents should attempt
+    get_file_contents directly for known policy file paths rather than searching).
+    Fewer tools = fewer sequential turns = less conversation-history accumulation.
+    """
     return make_github_toolset(
         GitHubMCPTool.GET_PULL_REQUEST,
         GitHubMCPTool.GET_PULL_REQUEST_FILES,
-        GitHubMCPTool.GET_PULL_REQUEST_COMMENTS,
         GitHubMCPTool.GET_FILE_CONTENTS,
         GitHubMCPTool.GET_REPOSITORY,
-        GitHubMCPTool.SEARCH_CODE,
         GitHubMCPTool.GET_ISSUE,
     )
 

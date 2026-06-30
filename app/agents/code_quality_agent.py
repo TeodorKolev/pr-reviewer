@@ -77,8 +77,8 @@ Compare PR style against conventions in the surrounding codebase:
 - Module and package structure patterns
 - Error handling patterns
 - Test organisation (if tests are in the diff)
-To check conventions, use get_file_contents to read 1-3 non-changed files
-in the same module for comparison. Limit to 5 file reads total.
+To check conventions, use get_file_contents to read at most 2 non-changed files
+in the same module for comparison.
 
 ## Scoring
 
@@ -89,12 +89,12 @@ overall_score: weighted average of all dimensions (0-100)
   30-49  Poor — significant issues creating technical debt
   0-29   Very poor — major refactoring needed
 
-## Process
+## Process — 4 steps maximum
 1. get_pull_request → confirm PR exists, get head_sha for file content calls
 2. get_pull_request_files → identify changed files, note additions/deletions
 3. get_pull_request_diff → read all changes
-4. get_file_contents (selective, max 3-5 files) → broader context where needed
-5. Produce CodeQualityResult and call set_model_response
+4. get_file_contents × at most 2 files → broader context only where clearly needed
+Then produce CodeQualityResult and call set_model_response.
 
 ## Constraints
 - Do NOT evaluate or report security issues (such as credentials, injection, secrets) — leave these entirely to the security_agent.

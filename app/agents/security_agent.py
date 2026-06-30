@@ -95,12 +95,12 @@ AI/LLM-specific vulnerabilities:
 Set to the highest severity across all four categories.
 Use 'none' only if all four lists are empty.
 
-## Process
+## Process — 4 steps maximum
 1. get_pull_request → confirm PR exists, get head_sha
 2. get_pull_request_diff → scan all changed code (primary source)
 3. get_pull_request_files → identify dependency manifest changes
-4. get_file_contents → read full dependency manifests if changed
-5. Produce SecurityResult and call set_model_response
+4. get_file_contents × at most 1 file → read the changed dependency manifest only if present
+Then produce SecurityResult and call set_model_response.
 
 ## Constraints
 - Analyse ONLY changed code — do not speculate about unchanged code
