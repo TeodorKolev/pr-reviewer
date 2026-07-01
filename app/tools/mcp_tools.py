@@ -42,7 +42,7 @@ from __future__ import annotations
 
 import os
 import re
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from google.adk.auth.auth_tool import AuthConfig
 from google.adk.tools import BaseTool, FunctionTool
@@ -106,6 +106,58 @@ class GitHubMCPTool:
             GET_ISSUE,
         }
     )
+
+
+class CachedTool(BaseTool):
+    """Wrapper that caches MCP tool results in session state to prevent duplicate calls."""
+
+    def __init__(self, underlying_tool: BaseTool) -> None:
+        super().__init__(
+            name=underlying_tool.name,
+            description=underlying_tool.description,
+            is_long_running=underlying_tool.is_long_running,
+            custom_metadata=underlying_tool.custom_metadata,
+        )
+        self._underlying = underlying_tool
+
+    def _get_declaration(self):
+        return self._underlying._get_declaration()
+
+    async def run_async(
+        self, *, args: dict[str, Any], tool_context: ToolContext
+    ) -> Any:
+        if not tool_context or not hasattr(tool_context, "state"):
+            return await self._underlying.run_async(
+                args=args, tool_context=tool_context
+            )
+
+        # Build a stable cache key from name and sorted args
+        sorted_args = tuple(sorted((k, str(v)) for k, v in args.items()))
+        cache_key = f"mcp_cache:{self.name}:{sorted_args}"
+
+        if cache_key in tool_context.state:
+            res = tool_context.state[cache_key]
+        else:
+            res = await self._underlying.run_async(args=args, tool_context=tool_context)
+            # Store in session state
+            tool_context.state[cache_key] = res
+
+        # Intercept and populate PR metadata to shared state when get_pull_request runs
+        if self.name == GitHubMCPTool.GET_PULL_REQUEST and isinstance(res, dict):
+            tool_context.state["pr_title"] = res.get("title")
+            tool_context.state["pr_body"] = res.get("body")
+            tool_context.state["pr_base_ref"] = res.get("base", {}).get("ref")
+            tool_context.state["pr_head_ref"] = res.get("head", {}).get("ref")
+            tool_context.state["pr_head_sha"] = res.get("head", {}).get("sha")
+            tool_context.state["pr_mergeable_state"] = res.get("mergeable_state")
+            labels = res.get("labels", [])
+            if isinstance(labels, list):
+                tool_context.state["pr_labels"] = [
+                    label.get("name") if isinstance(label, dict) else str(label)
+                    for label in labels
+                ]
+
+        return res
 
 
 # ---------------------------------------------------------------------------
@@ -483,7 +535,7 @@ class MockGithubToolset(BaseToolset):
         for _name, func in all_mocks.items():
             tool_obj = FunctionTool(func)
             if self._is_tool_selected(tool_obj, readonly_context):
-                tools.append(tool_obj)
+                tools.append(CachedTool(tool_obj))
         return tools
 
 
@@ -517,8 +569,8 @@ class GithubCompatibilityToolset(BaseToolset):
         tools = []
         for name in allowed_names:
             if name in server_tool_names:
-                # Expose native tool directly
-                tools.append(server_tools_map[name])
+                # Expose native tool directly (wrapped with caching)
+                tools.append(CachedTool(server_tools_map[name]))
                 continue
 
             # Map legacy PR tools to pull_request_read if available on the server
@@ -526,7 +578,7 @@ class GithubCompatibilityToolset(BaseToolset):
                 pr_read_tool = server_tools_map["pull_request_read"]
                 mapped_tool = self._create_mapped_tool(name, pr_read_tool)
                 if mapped_tool:
-                    tools.append(mapped_tool)
+                    tools.append(CachedTool(mapped_tool))
                     continue
 
         return tools
@@ -737,7 +789,6 @@ def orchestrator_toolset() -> McpToolset:
 def code_quality_toolset() -> McpToolset:
     """Tools for the Code Quality Agent (diff reading + file context)."""
     return make_github_toolset(
-        GitHubMCPTool.GET_PULL_REQUEST,
         GitHubMCPTool.GET_PULL_REQUEST_FILES,
         GitHubMCPTool.GET_PULL_REQUEST_DIFF,
         GitHubMCPTool.GET_FILE_CONTENTS,
@@ -747,7 +798,6 @@ def code_quality_toolset() -> McpToolset:
 def security_toolset() -> McpToolset:
     """Tools for the Security Agent (diff + dependency changes)."""
     return make_github_toolset(
-        GitHubMCPTool.GET_PULL_REQUEST,
         GitHubMCPTool.GET_PULL_REQUEST_FILES,
         GitHubMCPTool.GET_PULL_REQUEST_DIFF,
         GitHubMCPTool.GET_FILE_CONTENTS,
@@ -755,16 +805,8 @@ def security_toolset() -> McpToolset:
 
 
 def policy_toolset() -> McpToolset:
-    """Tools for the Policy Agent (labels, issues, config files).
-
-    Deliberately excludes get_pull_request_comments (review discussion is handled
-    by tests_review_agent via get_pull_request_reviews, and comments are not
-    needed for policy compliance) and search_code (agents should attempt
-    get_file_contents directly for known policy file paths rather than searching).
-    Fewer tools = fewer sequential turns = less conversation-history accumulation.
-    """
+    """Tools for the Policy Agent (labels, issues, config files)."""
     return make_github_toolset(
-        GitHubMCPTool.GET_PULL_REQUEST,
         GitHubMCPTool.GET_PULL_REQUEST_FILES,
         GitHubMCPTool.GET_FILE_CONTENTS,
         GitHubMCPTool.GET_REPOSITORY,
@@ -775,7 +817,6 @@ def policy_toolset() -> McpToolset:
 def tests_review_toolset() -> McpToolset:
     """Tools for the Tests Review Agent (CI status + test file mapping)."""
     return make_github_toolset(
-        GitHubMCPTool.GET_PULL_REQUEST,
         GitHubMCPTool.GET_PULL_REQUEST_FILES,
         GitHubMCPTool.GET_PULL_REQUEST_STATUS,
         GitHubMCPTool.GET_PULL_REQUEST_REVIEWS,
