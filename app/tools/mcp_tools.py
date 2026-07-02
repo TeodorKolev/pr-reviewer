@@ -40,6 +40,7 @@ the GitHub MCP server via McpToolset.
 
 from __future__ import annotations
 
+import json
 import os
 import re
 from typing import TYPE_CHECKING, Any
@@ -139,23 +140,66 @@ class CachedTool(BaseTool):
             res = tool_context.state[cache_key]
         else:
             res = await self._underlying.run_async(args=args, tool_context=tool_context)
+            # Apply token optimization truncation to large responses
+            if isinstance(res, dict):
+                # Truncate file contents to max 10KB
+                if "content" in res and isinstance(res["content"], str):
+                    content = res["content"]
+                    if len(content) > 10000:
+                        res["content"] = (
+                            content[:10000]
+                            + "\n\n[CONTENT TRUNCATED FOR TOKEN OPTIMIZATION]"
+                        )
+
+                # Truncate diffs to max 30KB
+                if "diff" in res and isinstance(res["diff"], str):
+                    diff = res["diff"]
+                    if len(diff) > 30000:
+                        res["diff"] = (
+                            diff[:30000] + "\n\n[DIFF TRUNCATED FOR TOKEN OPTIMIZATION]"
+                        )
+
+                # Truncate file lists to max 50 files
+                if "files" in res and isinstance(res["files"], list):
+                    if len(res["files"]) > 50:
+                        res["files"] = res["files"][:50]
+
             # Store in session state
             tool_context.state[cache_key] = res
 
-        # Intercept and populate PR metadata to shared state when get_pull_request runs
-        if self.name == GitHubMCPTool.GET_PULL_REQUEST and isinstance(res, dict):
-            tool_context.state["pr_title"] = res.get("title")
-            tool_context.state["pr_body"] = res.get("body")
-            tool_context.state["pr_base_ref"] = res.get("base", {}).get("ref")
-            tool_context.state["pr_head_ref"] = res.get("head", {}).get("ref")
-            tool_context.state["pr_head_sha"] = res.get("head", {}).get("sha")
-            tool_context.state["pr_mergeable_state"] = res.get("mergeable_state")
-            labels = res.get("labels", [])
-            if isinstance(labels, list):
-                tool_context.state["pr_labels"] = [
-                    label.get("name") if isinstance(label, dict) else str(label)
-                    for label in labels
-                ]
+        # Populate shared session state so specialist agents can read data
+        # via instruction interpolation ({pr_diff}, {pr_files}, etc.)
+        # without needing to call any tools themselves.
+        if isinstance(res, dict):
+            if self.name == GitHubMCPTool.GET_PULL_REQUEST:
+                tool_context.state["pr_title"] = res.get("title")
+                tool_context.state["pr_body"] = res.get("body")
+                tool_context.state["pr_base_ref"] = res.get("base", {}).get("ref")
+                tool_context.state["pr_head_ref"] = res.get("head", {}).get("ref")
+                tool_context.state["pr_head_sha"] = res.get("head", {}).get("sha")
+                tool_context.state["pr_mergeable_state"] = res.get("mergeable_state")
+                labels = res.get("labels", [])
+                if isinstance(labels, list):
+                    tool_context.state["pr_labels"] = [
+                        label.get("name") if isinstance(label, dict) else str(label)
+                        for label in labels
+                    ]
+            elif self.name == GitHubMCPTool.GET_PULL_REQUEST_FILES:
+                tool_context.state["pr_files"] = json.dumps(
+                    res.get("files", []), indent=2
+                )
+            elif self.name == GitHubMCPTool.GET_PULL_REQUEST_DIFF:
+                tool_context.state["pr_diff"] = res.get("diff", "")
+            elif self.name == GitHubMCPTool.GET_PULL_REQUEST_STATUS:
+                tool_context.state["pr_ci_status"] = json.dumps(
+                    res.get("check_runs", []), indent=2
+                )
+            elif self.name == GitHubMCPTool.GET_PULL_REQUEST_REVIEWS:
+                tool_context.state["pr_reviews"] = json.dumps(
+                    res.get("reviews", []), indent=2
+                )
+            elif self.name == GitHubMCPTool.GET_REPOSITORY:
+                tool_context.state["pr_repo_info"] = json.dumps(res, indent=2)
 
         return res
 
@@ -780,46 +824,44 @@ def make_github_toolset(*tool_names: str) -> BaseToolset:
 
 
 def orchestrator_toolset() -> McpToolset:
-    """Tools for the Review Orchestrator Agent (validation + PR header loading)."""
+    """Tools for the Review Orchestrator Agent.
+
+    Intentionally excludes get_pull_request_diff: the diff is large and
+    fetching it here would embed it in the orchestrator's multi-turn history,
+    multiplying its token cost across every subsequent turn. The
+    code_and_security_agent fetches the diff itself in an isolated 2-turn
+    context (include_contents="none") so it never leaks into the orchestrator.
+    """
     return make_github_toolset(
         GitHubMCPTool.GET_PULL_REQUEST,
+        GitHubMCPTool.GET_PULL_REQUEST_FILES,
+        GitHubMCPTool.GET_PULL_REQUEST_STATUS,
+        GitHubMCPTool.GET_PULL_REQUEST_REVIEWS,
+        GitHubMCPTool.GET_REPOSITORY,
     )
 
 
-def code_quality_toolset() -> McpToolset:
-    """Tools for the Code Quality Agent (diff reading + file context)."""
-    return make_github_toolset(
-        GitHubMCPTool.GET_PULL_REQUEST_FILES,
-        GitHubMCPTool.GET_PULL_REQUEST_DIFF,
-        GitHubMCPTool.GET_FILE_CONTENTS,
-    )
+def code_and_security_toolset() -> McpToolset:
+    """Tool for code_and_security_agent — only the diff.
 
-
-def security_toolset() -> McpToolset:
-    """Tools for the Security Agent (diff + dependency changes)."""
+    This agent has include_contents="none" so the diff result stays isolated
+    in its own 2-turn context and never accumulates in the orchestrator.
+    """
     return make_github_toolset(
-        GitHubMCPTool.GET_PULL_REQUEST_FILES,
         GitHubMCPTool.GET_PULL_REQUEST_DIFF,
-        GitHubMCPTool.GET_FILE_CONTENTS,
     )
 
 
 def policy_toolset() -> McpToolset:
-    """Tools for the Policy Agent (labels, issues, config files)."""
+    """Tools for the Policy Agent.
+
+    Files list and repo metadata are pre-fetched by the orchestrator and
+    available via {pr_files} / {pr_repo_info} state interpolation.
+    Only file-contents reads and issue lookups require live tool calls.
+    """
     return make_github_toolset(
-        GitHubMCPTool.GET_PULL_REQUEST_FILES,
         GitHubMCPTool.GET_FILE_CONTENTS,
-        GitHubMCPTool.GET_REPOSITORY,
         GitHubMCPTool.GET_ISSUE,
-    )
-
-
-def tests_review_toolset() -> McpToolset:
-    """Tools for the Tests Review Agent (CI status + test file mapping)."""
-    return make_github_toolset(
-        GitHubMCPTool.GET_PULL_REQUEST_FILES,
-        GitHubMCPTool.GET_PULL_REQUEST_STATUS,
-        GitHubMCPTool.GET_PULL_REQUEST_REVIEWS,
     )
 
 

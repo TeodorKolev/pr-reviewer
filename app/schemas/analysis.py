@@ -366,3 +366,18 @@ class ContextAnalysisResult(BaseModel):
     pr_size: Literal["xs", "s", "m", "l", "xl"] = Field(default="m")
     scope_concerns: list[str] = Field(default_factory=list)
     summary: str = Field(default="")
+
+
+class CodeAndSecurityResult(BaseModel):
+    """Combined output from code_and_security_agent.
+
+    Merges CodeQualityResult and SecurityResult into a single schema so both
+    analyses can be produced in one LLM call, halving diff-injection overhead.
+    """
+
+    code_quality: CodeQualityResult = Field(
+        description="Code quality analysis: complexity, maintainability, duplication, naming."
+    )
+    security: SecurityResult = Field(
+        description="Security analysis: secrets, dangerous patterns, dependencies, prompt injection."
+    )

@@ -1,15 +1,15 @@
-"""Tests Review Agent — CI status and test coverage analysis via GitHub MCP.
+"""Tests Review Agent — CI status and test coverage analysis.
 
-Evaluates whether changed code is adequately tested and CI checks are passing.
+All data is pre-fetched by the orchestrator and written to session state.
+This agent runs in single-turn mode with no tool calls.
 
-GitHub MCP tools available:
-  get_pull_request         — PR metadata, mergeable_state (CI proxy), head SHA
-  get_pull_request_files   — list of changed files (source vs test correlation)
-  get_pull_request_status  — CI check runs and combined commit status
-  get_pull_request_reviews — review submissions (approved, changes-requested, etc.)
+Session state consumed:
+  {pr_files}          — JSON list of changed files (source vs test correlation)
+  {pr_ci_status}      — JSON list of CI check runs
+  {pr_reviews}        — JSON list of PR review submissions
+  {pr_mergeable_state?} — GitHub mergeable state string (CI proxy)
 
-Session state consumed (written by orchestrator via parse_pr_url):
-  {pr_owner}, {pr_repo}, {pr_pull_number}
+Writes to state["tests_analysis"] (TestsAnalysisResult).
 """
 
 from google.adk.agents import Agent
@@ -17,45 +17,65 @@ from google.adk.models import Gemini
 from google.genai import types
 
 from app.schemas.analysis import TestsAnalysisResult
-from app.tools import tests_review_toolset
 
 _INSTRUCTION = """
-You are a quality engineer. Evaluate test coverage and CI results.
+You are a quality engineer. Evaluate test coverage and CI results for this PR.
 
-For CI status (ci_passing):
-1. Call get_pull_request_status.
-2. Read the pr_mergeable_state session variable: {pr_mergeable_state?}.
-- If CI checks are successful or {pr_mergeable_state?} is "clean" -> ci_passing = True.
-- If checks are failing or {pr_mergeable_state?} is "unstable" -> ci_passing = False.
-- If no checks exist -> ci_passing = None.
+## PR Data (pre-fetched)
 
-For test coverage (coverage_adequate, missing_coverage, test_quality_score):
-1. Call get_pull_request_files to identify source and test files.
-2. If functional source code was modified, verify corresponding test files were also added/updated.
-3. Test quality score: 0 if no tests added; 50-69 for happy path only; 70-89 for good edge cases; 90-100 for comprehensive tests.
+Changed files:
+{pr_files?}
 
-Process:
-1. Call get_pull_request_status.
-2. Call get_pull_request_files.
-3. Call get_pull_request_reviews to check for blocking reviews.
-4. Call set_model_response with your structured TestsAnalysisResult.
+CI check runs:
+{pr_ci_status?}
 
-Do NOT evaluate security or policy compliance. NEVER output conversational text or explanations — only call tools and call set_model_response.
+PR reviews:
+{pr_reviews?}
+
+PR mergeable state: {pr_mergeable_state?}
+
+---
+
+## CI Status (ci_passing)
+
+- If check runs show all conclusions as "success" OR {pr_mergeable_state?} is "clean"
+  → ci_passing = True
+- If any check run conclusion is "failure" OR {pr_mergeable_state?} is "unstable"
+  → ci_passing = False
+- If no check runs exist and mergeable_state is absent or "unknown"
+  → ci_passing = None
+
+## Test Coverage
+
+1. Identify which changed files are source files vs test files from {pr_files?}.
+2. If functional source code was modified, check whether corresponding test files
+   were also added or updated.
+3. Assign test_quality_score:
+   - 0   = no tests added for new/changed logic
+   - 50-69 = happy path only
+   - 70-89 = good edge cases covered
+   - 90-100 = comprehensive tests with assertions and edge cases
+
+Do NOT evaluate security or policy compliance.
+Call set_model_response with your structured TestsAnalysisResult.
 """
 
 tests_review_agent = Agent(
     name="tests_review_agent",
     model=Gemini(
         model="gemini-flash-latest",
-        retry_options=types.HttpRetryOptions(attempts=5),
+        retry_options=types.HttpRetryOptions(attempts=3),
     ),
     description=(
-        "Evaluates CI check status and test coverage via GitHub MCP: correlates "
-        "source file changes with test file changes and assesses test quality. "
+        "Single-turn agent that evaluates CI check status and test coverage. "
+        "Correlates source file changes with test file changes. "
+        "Reads all data from session state — no tool calls. "
         "Produces a structured TestsAnalysisResult."
     ),
     instruction=_INSTRUCTION,
+    mode="single_turn",
+    include_contents="none",
     output_schema=TestsAnalysisResult,
     output_key="tests_analysis",
-    tools=[tests_review_toolset()],
+    tools=[],
 )

@@ -4,7 +4,7 @@ Reads the structured outputs of all specialist agents from session state
 and produces a single PRRecommendation JSON object.
 
 This agent uses no tools — it operates purely on state written by
-code_quality_agent, security_agent, policy_agent, and tests_review_agent.
+code_and_security_agent, policy_agent, and tests_review_agent.
 """
 
 from google.adk.agents import Agent
@@ -15,83 +15,92 @@ from app.schemas.recommendation import PRRecommendation
 
 _INSTRUCTION = """
 You are the final synthesis stage of PR Guardian, an automated Pull Request
-analysis system. Four specialist agents have already analysed the PR from
-different dimensions.
+analysis system. Three specialist agents have already analysed the PR.
 
 Here are the analysis results retrieved from the session state:
-- Code Quality: {code_quality}
-- Security Review: {security_review}
-- Policy Review: {policy_review}
-- Tests Analysis: {tests_analysis}
+- Code Quality & Security: {code_and_security?}
+- Policy Review: {policy_review?}
+- Tests Analysis: {tests_analysis?}
 
 Your ONLY job is to synthesise these findings into a single PRRecommendation.
 You do NOT call any tools. You do NOT access GitHub.
 You do NOT make up findings not present in the specialist outputs.
 
+The `code_and_security` result contains two nested objects:
+  - `code_and_security.code_quality` — CodeQualityResult fields
+  - `code_and_security.security`     — SecurityResult fields
+
 ## Recommendation Decision Rules (Human-in-the-Loop Approval Model)
 
 ### 1. Request Changes
-Use this recommendation when there are serious blockers that prevent a safe merge.
-Conditions:
-  - There are any findings in `security_review.secrets_findings` (even if placeholders/mock values) OR any findings in `security_review.prompt_injection_findings`.
-  - `security_review.has_critical_issues` is True OR `security_review.overall_risk_level` is 'high' or 'critical' (e.g., exposed secrets, severe injection risks, prompt injection vulnerabilities).
-  - `tests_analysis.ci_passing` is False (CI checks are explicitly failing, indicating broken code).
-  - `policy_review.compliant` is False AND one or more policy violations have severity='blocking'.
+Use when there are serious blockers that prevent a safe merge.
+Conditions (any one is sufficient):
+  - Any findings in `code_and_security.security.secrets_findings` OR
+    `code_and_security.security.prompt_injection_findings`.
+  - `code_and_security.security.has_critical_issues` is True OR
+    `code_and_security.security.overall_risk_level` is 'high' or 'critical'.
+  - `tests_analysis.ci_passing` is False (CI checks are explicitly failing).
+  - `policy_review.compliant` is False AND one or more violations have severity='blocking'.
 
 ### 2. Needs Minor Changes
-Use this recommendation when the PR is functionally correct but requires small improvements.
-Conditions:
-  - Not in 'Request Changes' state.
-  - Minor issues present (e.g. `code_quality.overall_score` is between 50 and 80, minor naming or style issues).
+Use when the PR is functionally correct but needs small improvements.
+Conditions (not in "Request Changes" state AND any of):
+  - `code_and_security.code_quality.overall_score` is between 50 and 80, or minor
+    naming/style issues are present.
   - Test coverage is slightly lacking but not completely missing.
-  - Non-blocking policy warnings are present (e.g., warnings in `policy_review` of severity 'warning').
+  - Non-blocking policy warnings (severity 'warning') are present.
 
 ### 3. Ready for Approval
-Use this recommendation when the PR is clean, safe, and fully compliant.
-Conditions:
+Use when the PR is clean, safe, and fully compliant.
+Conditions (all must hold):
   - No blocking issues or critical findings.
-  - Test coverage is excellent and CI checks are passing.
-  - Code quality score is high (80+).
-  - Fully compliant with repository policy rules (no 'blocking' or 'warning' violations).
+  - Test coverage adequate and CI checks passing.
+  - `code_and_security.code_quality.overall_score` ≥ 80.
+  - No 'blocking' or 'warning' policy violations.
 
 ### 4. Manual Investigation Recommended
-Use this recommendation when there is high ambiguity or incomplete data.
+Use when there is high ambiguity or incomplete data.
 Conditions:
-  - Confidence is 'low' (due to truncated diffs, massive PR size exceeding 1000+ lines, or errors).
-  - Conflicting signals or critical missing information (e.g. CI status unknown on complex source changes).
+  - Confidence is 'low' (truncated diff, PR > 1000 lines, or system errors).
+  - Conflicting signals or missing CI status on complex source changes.
 
 ## Recommendation Reason (recommendation_reason)
-You must write a detailed explanation of WHY the chosen recommendation was made. Be specific:
-- For `Request Changes`: Identify the specific critical vulnerability or test failure that blocks merge.
-- For `Needs Minor Changes`: List the specific file quality improvements or formatting tasks needed.
-- For `Ready for Approval`: Summarise why the changes are low risk and confirm all checks are satisfied.
-- For `Manual Investigation Recommended`: Highlight the specific gap in data or complexity that requires human eyes.
+Write a detailed explanation of WHY the chosen recommendation was made:
+- Request Changes: Identify the specific vulnerability or test failure blocking merge.
+- Needs Minor Changes: List specific file quality improvements or formatting tasks needed.
+- Ready for Approval: Summarise why changes are low risk and all checks are satisfied.
+- Manual Investigation Recommended: Highlight the specific gap requiring human eyes.
 
 ## Building the Findings fields
 
 ### security_findings
-Collect and merge all findings from `security_review` (secrets_findings, dangerous_pattern_findings, dependency_findings, prompt_injection_findings).
+Collect and merge all findings from `code_and_security.security`:
+  secrets_findings, dangerous_pattern_findings, dependency_findings,
+  prompt_injection_findings.
 
 ### code_quality_findings
-Collect and merge all concerns from `code_quality` (duplicated_logic, naming_issues, convention_violations) that have severity 'high' or 'medium'. Concerns with severity 'low' or 'info' must be put into the `suggestions` list instead.
+Collect concerns from `code_and_security.code_quality`
+  (duplicated_logic, naming_issues, convention_violations) with severity 'high' or 'medium'.
+  Severity 'low' or 'info' → put into `suggestions` instead.
 
 ### policy_findings
-Collect all policy violations from `policy_review.violations` that have severity 'blocking' or 'warning'. Violations with severity 'info' must be put into the `suggestions` list instead.
+Collect from `policy_review.violations` with severity 'blocking' or 'warning'.
+  Severity 'info' → put into `suggestions` instead.
 
 ### suggestions
 Include:
 - Non-blocking suggestions from tests_analysis.
-- Any code_quality concerns with severity 'low' or 'info'.
-- Any policy_review violations with severity 'info'.
+- code_quality concerns with severity 'low' or 'info'.
+- policy violations with severity 'info'.
 - Any other non-blocking improvements.
 
 ### human_approval_required
-Always set this to True to explicitly denote that final approval must be performed by a human reviewer.
+Always set this to True.
 
 ## Output requirements — always include ALL fields
 
-1. recommendation:          one of 'Ready for Approval', 'Needs Minor Changes', 'Request Changes', 'Manual Investigation Recommended'
-2. recommendation_reason:   A detailed explanation explaining why the recommendation was selected
+1. recommendation:          one of the four recommendation strings
+2. recommendation_reason:   detailed explanation of why this recommendation was chosen
 3. confidence:              'high', 'medium', or 'low'
 4. summary:                 3-5 sentence narrative a human reviewer can act on immediately
 5. security_findings:       list[SecurityFinding]
@@ -115,17 +124,17 @@ synthesizer_agent = Agent(
     name="synthesizer_agent",
     model=Gemini(
         model="gemini-flash-latest",
-        retry_options=types.HttpRetryOptions(attempts=5),
+        retry_options=types.HttpRetryOptions(attempts=3),
     ),
     description=(
-        "Synthesises outputs of all four specialist agents (code_quality, security, "
-        "policy, tests) from session state into a single advisory PRRecommendation. "
+        "Synthesises outputs of all three specialist agents (code_and_security, policy, "
+        "tests) from session state into a single advisory PRRecommendation. "
         "No tools used. Never approves or rejects a PR."
     ),
     instruction=_INSTRUCTION,
     mode="single_turn",
     output_schema=PRRecommendation,
     output_key="pr_recommendation",
-    include_contents="none",  # reads from state, not conversation history
+    include_contents="none",
     tools=[],
 )
