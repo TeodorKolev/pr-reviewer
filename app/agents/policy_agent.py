@@ -20,6 +20,7 @@ Session state consumed (written by orchestrator via parse_pr_url):
 
 from google.adk.agents import Agent
 from google.adk.models import Gemini
+from google.genai import types
 
 from app.schemas.analysis import PolicyResult
 from app.tools import policy_toolset
@@ -51,7 +52,10 @@ Do NOT evaluate code quality or security. NEVER output conversational text or ex
 
 policy_agent = Agent(
     name="policy_agent",
-    model=Gemini(model="gemini-flash-latest"),
+    model=Gemini(
+        model="gemini-flash-latest",
+        retry_options=types.HttpRetryOptions(attempts=5),
+    ),
     description=(
         "Checks repository governance policies via GitHub MCP: required labels, "
         "linked issues, changelog updates, documentation requirements, and "

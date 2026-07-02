@@ -14,6 +14,7 @@ Session state consumed (written by orchestrator via parse_pr_url):
 
 from google.adk.agents import Agent
 from google.adk.models import Gemini
+from google.genai import types
 
 from app.schemas.analysis import TestsAnalysisResult
 from app.tools import tests_review_toolset
@@ -44,7 +45,10 @@ Do NOT evaluate security or policy compliance. NEVER output conversational text 
 
 tests_review_agent = Agent(
     name="tests_review_agent",
-    model=Gemini(model="gemini-flash-latest"),
+    model=Gemini(
+        model="gemini-flash-latest",
+        retry_options=types.HttpRetryOptions(attempts=5),
+    ),
     description=(
         "Evaluates CI check status and test coverage via GitHub MCP: correlates "
         "source file changes with test file changes and assesses test quality. "

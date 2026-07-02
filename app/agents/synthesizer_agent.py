@@ -9,6 +9,7 @@ code_quality_agent, security_agent, policy_agent, and tests_review_agent.
 
 from google.adk.agents import Agent
 from google.adk.models import Gemini
+from google.genai import types
 
 from app.schemas.recommendation import PRRecommendation
 
@@ -112,7 +113,10 @@ Call finish_task with a complete, valid PRRecommendation JSON object.
 
 synthesizer_agent = Agent(
     name="synthesizer_agent",
-    model=Gemini(model="gemini-flash-latest"),
+    model=Gemini(
+        model="gemini-flash-latest",
+        retry_options=types.HttpRetryOptions(attempts=5),
+    ),
     description=(
         "Synthesises outputs of all four specialist agents (code_quality, security, "
         "policy, tests) from session state into a single advisory PRRecommendation. "

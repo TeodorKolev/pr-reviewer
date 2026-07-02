@@ -16,6 +16,7 @@ Session state consumed (written by orchestrator via parse_pr_url):
 
 from google.adk.agents import Agent
 from google.adk.models import Gemini
+from google.genai import types
 
 from app.schemas.analysis import CodeQualityResult
 from app.tools import code_quality_toolset
@@ -43,7 +44,10 @@ Do NOT evaluate security, policies, or test coverage. NEVER output conversationa
 
 code_quality_agent = Agent(
     name="code_quality_agent",
-    model=Gemini(model="gemini-flash-latest"),
+    model=Gemini(
+        model="gemini-flash-latest",
+        retry_options=types.HttpRetryOptions(attempts=5),
+    ),
     description=(
         "Analyses changed files for complexity, maintainability, duplicated logic, "
         "naming consistency, and project convention adherence via GitHub MCP. "

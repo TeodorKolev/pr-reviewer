@@ -18,6 +18,7 @@ Session state consumed (written by orchestrator via parse_pr_url):
 
 from google.adk.agents import Agent
 from google.adk.models import Gemini
+from google.genai import types
 
 from app.schemas.analysis import SecurityResult
 from app.tools import security_toolset
@@ -42,7 +43,10 @@ Do NOT evaluate code quality, policies, or tests. NEVER output conversational te
 
 security_agent = Agent(
     name="security_agent",
-    model=Gemini(model="gemini-flash-latest"),
+    model=Gemini(
+        model="gemini-flash-latest",
+        retry_options=types.HttpRetryOptions(attempts=5),
+    ),
     description=(
         "Analyses changed code for exposed secrets, dangerous patterns, "
         "dependency risks, and AI/LLM prompt injection vulnerabilities "
