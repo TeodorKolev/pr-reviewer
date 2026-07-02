@@ -25,49 +25,52 @@ A single LLM cannot solve this well — a 1000-line diff with 10 changed files o
 
 ## The Solution
 
-PR Guardian runs **four specialist AI agents in parallel**, each focused on a single analysis dimension, then **synthesizes** their structured outputs into a single recommendation with confidence score.
+PR Guardian runs **three specialist AI agents in parallel**, each focused on a single analysis dimension, then **synthesizes** their structured outputs into a single recommendation with confidence score.
 
 ```
 User: "Analyse https://github.com/owner/repo/pull/42"
            │
            ▼
-┌─────────────────────────────────────────────────────┐
-│           review_orchestrator_agent                 │
-│  Parse URL → Fetch PR via GitHub MCP → Delegate    │
-└────────────────────┬────────────────────────────────┘
-                     │
-                     ▼
-        ┌────────────────────────┐
-        │  analysis_pipeline     │
-        │  (SequentialAgent)     │
-        └────────────┬───────────┘
-                     │
-         ┌───────────▼────────────┐
-         │   specialist_panel     │
-         │   (ParallelAgent)      │
-         │  ┌──────────────────┐  │
-         │  │ code_quality     │──┼──▶ state["code_quality"]
-         │  │ security         │──┼──▶ state["security_review"]
-         │  │ policy           │──┼──▶ state["policy_review"]
-         │  │ tests_review     │──┼──▶ state["tests_analysis"]
-         │  └──────────────────┘  │
-         └───────────┬────────────┘
-                     │
-                     ▼
-         ┌───────────────────────┐
-         │   synthesizer_agent   │──▶ PRRecommendation (JSON + human report)
-         └───────────────────────┘
+┌──────────────────────────────────────────────────────────────┐
+│                  review_orchestrator_agent                   │
+│  Parse URL → Validate PR → Pre-fetch small metadata fields  │
+│  (files list, CI status, reviews, repo info — NOT the diff) │
+└────────────────────────┬─────────────────────────────────────┘
+                         │
+                         ▼
+          ┌──────────────────────────┐
+          │    analysis_pipeline     │
+          │     (SequentialAgent)    │
+          └──────────────┬───────────┘
+                         │
+          ┌──────────────▼──────────────┐
+          │      specialist_panel       │
+          │       (ParallelAgent)       │
+          │  ┌────────────────────────┐ │
+          │  │ code_and_security  [1] │─┼──▶ state["code_and_security"]
+          │  │ policy                 │─┼──▶ state["policy_review"]
+          │  │ tests_review       [2] │─┼──▶ state["tests_analysis"]
+          │  └────────────────────────┘ │
+          └──────────────┬──────────────┘
+                         │
+                         ▼
+          ┌──────────────────────────┐
+          │     synthesizer_agent    │──▶ PRRecommendation (JSON + human report)
+          └──────────────────────────┘
 ```
+
+> **[1]** `code_and_security_agent` fetches the diff itself (`include_contents="none"`), keeping it isolated from the orchestrator's context.
+> **[2]** `tests_review_agent` is single-turn — reads pre-fetched CI data from session state, no tool calls.
 
 ### Why Agents?
 
-| Challenge | Why Agents Help |
+| Challenge | How PR Guardian solves it |
 |---|---|
-| Multiple analysis dimensions | ParallelAgent runs all four simultaneously — no sequential bottleneck |
+| Multiple analysis dimensions | `ParallelAgent` runs all three specialists simultaneously — no sequential bottleneck |
 | Structured, typed outputs | Each agent uses a Pydantic `output_schema` — no free-text parsing needed |
-| Long diffs | Each specialist focuses on one dimension — smaller, focused context windows |
-| Tool safety | ADK plugins enforce read-only MCP access at the framework level |
-| Evaluation | ADK's eval framework lets us verify agent behavior with reproducible test cases |
+| Large diffs are expensive | Diff is fetched once, in an isolated agent context — never accumulates in the orchestrator's multi-turn history |
+| Tool safety | `ReadOnlyEnforcerPlugin` enforces read-only MCP access at the framework level |
+| Evaluation | ADK eval framework verifies agent behavior with reproducible test cases |
 
 ---
 
@@ -75,33 +78,45 @@ User: "Analyse https://github.com/owner/repo/pull/42"
 
 ### Agents
 
-| Agent | Type | Role |
-|---|---|---|
-| `review_orchestrator_agent` | `Agent` | Entry point. Validates PR URL, fetches header, delegates to pipeline |
-| `specialist_panel` | `ParallelAgent` | Runs all four specialists concurrently |
-| `code_quality_agent` | `Agent` | Code complexity, duplication, naming, maintainability |
-| `security_agent` | `Agent` | Secrets, dangerous patterns, dependency risks, prompt injection |
-| `policy_agent` | `Agent` | Labels, linked issues, changelog, CODEOWNERS, CONTRIBUTING.md |
-| `tests_review_agent` | `Agent` | CI status, test coverage gaps, test quality |
-| `analysis_pipeline` | `SequentialAgent` | Sequences the panel then the synthesizer |
-| `synthesizer_agent` | `Agent` | Aggregates all structured results into `PRRecommendation` |
+| Agent | Type | Mode | Role |
+|---|---|---|---|
+| `review_orchestrator_agent` | `Agent` | multi-turn | Entry point. Validates PR URL, pre-fetches small metadata, delegates to pipeline |
+| `analysis_pipeline` | `SequentialAgent` | — | Sequences the specialist panel then the synthesizer |
+| `specialist_panel` | `ParallelAgent` | — | Runs all three specialists concurrently |
+| `code_and_security_agent` | `Agent` | multi-turn, `include_contents="none"` | Fetches diff in isolation; analyses code quality + security in one pass |
+| `policy_agent` | `Agent` | multi-turn | Labels, linked issues, changelog, CODEOWNERS, CONTRIBUTING.md |
+| `tests_review_agent` | `Agent` | single-turn | CI status, test coverage gaps; reads pre-fetched data from state (no tool calls) |
+| `synthesizer_agent` | `Agent` | single-turn | Aggregates all structured results into `PRRecommendation` |
+
+### Token efficiency design
+
+The dominant cost in a naive multi-agent pipeline is **diff duplication**: a large diff fetched inside a multi-turn agent's conversation accumulates in every subsequent turn's context. PR Guardian avoids this with two design choices:
+
+1. **Orchestrator never fetches the diff.** It only fetches small fields (file list, CI status, reviews, repo info). Those stay cheap across its many conversation turns.
+
+2. **`code_and_security_agent` fetches the diff itself with `include_contents="none"`.** This isolates the diff in a 2-turn context that never surfaces in the orchestrator or any other agent. The diff appears exactly once.
+
+3. **`tests_review_agent` is single-turn with no tools.** CI status and file list are pre-fetched by the orchestrator and injected via session-state interpolation (`{pr_ci_status?}`).
+
+| Scenario | Approx. input tokens |
+|---|---|
+| Naive 4-agent pipeline (original) | ~60K |
+| After diff isolation + agent merge | ~15–20K |
 
 ### Tools — GitHub MCP (only external integration)
 
 All GitHub data access goes through the [GitHub MCP Server](https://github.com/github/github-mcp-server). No agent makes direct REST or GraphQL calls.
 
-| MCP Tool | Used by | Purpose |
-|---|---|---|
-| `get_pull_request` | Orchestrator, all specialists | PR metadata, title, author, head/base, draft status |
-| `get_pull_request_files` | Code quality, security, policy | List of changed files with per-file patches |
-| `get_pull_request_diff` | Code quality, security | Full unified diff |
-| `get_pull_request_comments` | Policy | Review discussion and inline annotations |
-| `get_pull_request_reviews` | Policy | Review submissions (approved, changes-requested) |
-| `get_pull_request_status` | Tests review | CI check runs and combined commit status |
-| `get_file_contents` | Security, policy | Raw file content (dependency manifests, CODEOWNERS, etc.) |
-| `get_repository` | Policy | Repository metadata, label list, default branch |
-| `search_code` | Policy | Search for policy files within the repo |
-| `get_issue` | Policy | Validate linked issue details |
+| MCP Tool | Fetched by | Written to state as | Purpose |
+|---|---|---|---|
+| `get_pull_request` | Orchestrator | `pr_title`, `pr_body`, `pr_labels`, … | PR metadata, head/base, draft status |
+| `get_pull_request_files` | Orchestrator | `pr_files` | Changed file list (used by all specialists) |
+| `get_pull_request_status` | Orchestrator | `pr_ci_status` | CI check runs and combined commit status |
+| `get_pull_request_reviews` | Orchestrator | `pr_reviews` | Review submissions (approved, changes-requested) |
+| `get_repository` | Orchestrator | `pr_repo_info` | Repository metadata, label list, default branch |
+| `get_pull_request_diff` | `code_and_security_agent` | — (stays in agent context) | Full unified diff — isolated to prevent accumulation |
+| `get_file_contents` | `policy_agent` | — | CODEOWNERS, CONTRIBUTING.md, PR templates |
+| `get_issue` | `policy_agent` | — | Validate linked issue details |
 
 **Compatibility note**: `GithubCompatibilityToolset` automatically handles the GitHub MCP API change in v0.18+ (where granular PR tools were consolidated into `pull_request_read`). The compatibility layer dynamically maps legacy tool names to the new unified API, so agents work identically against any server version.
 
@@ -153,7 +168,7 @@ This is a **hard runtime guardrail** — it fires even if the LLM were somehow c
 
 ### 3. Prompt injection detection
 
-The `security_agent` explicitly scans for AI/LLM-specific vulnerabilities:
+The `code_and_security_agent` explicitly scans for AI/LLM-specific vulnerabilities:
 - User-controlled input concatenated into LLM prompts without sanitisation
 - Format string injection in prompt templates
 - Indirect injection via external data sources inserted into model context
@@ -300,14 +315,13 @@ pr-reviewer/
 ├── app/
 │   ├── agent.py                           # ADK App entry point — root agent + plugins
 │   ├── agents/
-│   │   ├── review_orchestrator_agent.py   # Root agent — validates URL, orchestrates pipeline
-│   │   ├── code_quality_agent.py          # Code complexity, duplication, naming
-│   │   ├── security_agent.py              # Secrets, injections, dependencies, prompt injection
+│   │   ├── review_orchestrator_agent.py   # Root agent — validates URL, pre-fetches metadata, orchestrates
+│   │   ├── code_and_security_agent.py     # Fetches diff in isolated context; code quality + security
 │   │   ├── policy_agent.py                # Labels, issues, changelog, CODEOWNERS
-│   │   ├── tests_review_agent.py          # CI status, coverage gaps
-│   │   └── synthesizer_agent.py           # Aggregates all outputs → PRRecommendation
+│   │   ├── tests_review_agent.py          # CI status, coverage gaps (single-turn, no tools)
+│   │   └── synthesizer_agent.py           # Aggregates all outputs → PRRecommendation (single-turn)
 │   ├── tools/
-│   │   └── mcp_tools.py                   # GitHub MCP integration + compatibility layer
+│   │   └── mcp_tools.py                   # GitHub MCP integration + compatibility layer + CachedTool
 │   ├── plugins/
 │   │   └── readonly_enforcer.py           # Hard runtime safety guardrail (BasePlugin)
 │   ├── schemas/
