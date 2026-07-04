@@ -88,21 +88,6 @@ User: "Analyse https://github.com/owner/repo/pull/42"
 | `tests_review_agent` | `Agent` | single-turn | CI status, test coverage gaps; reads pre-fetched data from state (no tool calls) |
 | `synthesizer_agent` | `Agent` | single-turn | Aggregates all structured results into `PRRecommendation` |
 
-### Token efficiency design
-
-The dominant cost in a naive multi-agent pipeline is **diff duplication**: a large diff fetched inside a multi-turn agent's conversation accumulates in every subsequent turn's context. PR Guardian avoids this with two design choices:
-
-1. **Orchestrator never fetches the diff.** It only fetches small fields (file list, CI status, reviews, repo info). Those stay cheap across its many conversation turns.
-
-2. **`code_and_security_agent` fetches the diff itself with `include_contents="none"`.** This isolates the diff in a 2-turn context that never surfaces in the orchestrator or any other agent. The diff appears exactly once.
-
-3. **`tests_review_agent` is single-turn with no tools.** CI status and file list are pre-fetched by the orchestrator and injected via session-state interpolation (`{pr_ci_status?}`).
-
-| Scenario | Approx. input tokens |
-|---|---|
-| Naive 4-agent pipeline (original) | ~60K |
-| After diff isolation + agent merge | ~15–20K |
-
 ### Tools — GitHub MCP (only external integration)
 
 All GitHub data access goes through the [GitHub MCP Server](https://github.com/github/github-mcp-server). No agent makes direct REST or GraphQL calls.
@@ -338,7 +323,6 @@ pr-reviewer/
 │   └── load_test/                         # Load tests
 ├── deployment/
 │   └── terraform/                         # Cloud Run + IAM + Secret Manager infrastructure
-├── .github/workflows/                     # CI/CD — test, lint, deploy pipelines
 ├── Dockerfile                             # Container image for Cloud Run
 ├── agents-cli-manifest.yaml              # agents-cli project configuration
 └── pyproject.toml                         # Dependencies (uv)
@@ -373,9 +357,6 @@ agents-cli deploy
 ```bash
 # Set up Cloud Run + IAM + Secret Manager
 agents-cli infra single-project
-
-# Set up full CI/CD pipeline with GitHub Actions
-agents-cli infra cicd
 ```
 
 ### Production environment variables
