@@ -16,6 +16,13 @@ FROM python:3.12-slim
 
 RUN pip install --no-cache-dir uv==0.8.13
 
+# Install github-mcp-server binary for GITHUB_MCP_MODE=binary
+RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certificates && \
+    curl -fsSL https://github.com/github/github-mcp-server/releases/latest/download/github-mcp-server_Linux_x86_64.tar.gz \
+    | tar -xz -C /usr/local/bin github-mcp-server && \
+    chmod +x /usr/local/bin/github-mcp-server && \
+    apt-get purge -y curl && apt-get autoremove -y && rm -rf /var/lib/apt/lists/*
+
 WORKDIR /code
 
 COPY ./pyproject.toml ./README.md ./uv.lock* ./

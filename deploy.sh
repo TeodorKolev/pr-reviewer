@@ -20,7 +20,7 @@ gcloud run services update "$SERVICE" \
   --region="$REGION" \
   --project="$PROJECT" \
   --set-secrets="GOOGLE_API_KEY=GOOGLE_API_KEY:latest,GITHUB_TOKEN=GITHUB_TOKEN:latest" \
-  --set-env-vars="GOOGLE_GENAI_USE_VERTEXAI=False"
+  --set-env-vars="GOOGLE_GENAI_USE_VERTEXAI=False,GITHUB_MCP_MODE=binary"
 
 echo "✅ Done."
 gcloud run services describe "$SERVICE" --region="$REGION" --project="$PROJECT" --format="value(status.url)"
