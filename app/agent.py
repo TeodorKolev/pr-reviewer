@@ -56,7 +56,7 @@ except Exception:
     pass  # Local dev with GOOGLE_API_KEY — ADC not required
 
 os.environ.setdefault("GOOGLE_CLOUD_LOCATION", "global")
-os.environ.setdefault("GOOGLE_GENAI_USE_VERTEXAI", "True")
+os.environ.setdefault("GOOGLE_GENAI_USE_VERTEXAI", "False")
 
 # ---------------------------------------------------------------------------
 # ADK App — root agent + safety plugin
