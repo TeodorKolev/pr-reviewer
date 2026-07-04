@@ -48,6 +48,31 @@ resource "google_cloud_run_v2_service" "app" {
         name  = "OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT"
         value = "NO_CONTENT"
       }
+
+      env {
+        name  = "GOOGLE_GENAI_USE_VERTEXAI"
+        value = "False"
+      }
+
+      env {
+        name = "GOOGLE_API_KEY"
+        value_source {
+          secret_key_ref {
+            secret  = "GOOGLE_API_KEY"
+            version = "latest"
+          }
+        }
+      }
+
+      env {
+        name = "GITHUB_TOKEN"
+        value_source {
+          secret_key_ref {
+            secret  = "GITHUB_TOKEN"
+            version = "latest"
+          }
+        }
+      }
     }
 
     service_account = google_service_account.app_sa.email
@@ -71,6 +96,7 @@ resource "google_cloud_run_v2_service" "app" {
   lifecycle {
     ignore_changes = [
       template[0].containers[0].image,
+      template[0].containers[0].env,
     ]
   }
 

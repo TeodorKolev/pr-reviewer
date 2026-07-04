@@ -40,6 +40,15 @@ resource "google_service_account" "app_sa" {
   depends_on   = [resource.google_project_service.services]
 }
 
+# Allow unauthenticated (public) access to the Cloud Run service
+resource "google_cloud_run_v2_service_iam_member" "public_access" {
+  project  = var.project_id
+  location = var.region
+  name     = var.project_name
+  role     = "roles/run.invoker"
+  member   = "allUsers"
+}
+
 # Grant application SA the required permissions to run the application
 resource "google_project_iam_member" "app_sa_roles" {
   for_each = {
